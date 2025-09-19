@@ -656,7 +656,12 @@ class StockFinancialDatabase:
                 print(f"最新ステータスファイル: {latest_file} (日付: {file_date})")
                 
                 if file_date == current_date:
-                    print("データは既に最新です。")
+                    # 同じ日でも新規データがあるかチェック
+                    if self._check_same_day_updates(file_date, current_date):
+                        print("当日の新規財務データを検出しました。当日更新を実行します。")
+                        self._perform_same_day_update(current_date)
+                    else:
+                        print("データは既に最新です。")
                 else:
                     print(f"日付範囲更新を実行します: {file_date} → {current_date}")
                     self._perform_date_range_update(file_date, current_date)
@@ -744,6 +749,10 @@ class StockFinancialDatabase:
                         info['date_range'] = value
                     elif key == '対象市場':
                         info['markets'] = value
+                    elif key == '当日取得財務データ数':
+                        info['当日取得財務データ数'] = int(value) if value.isdigit() else 0
+                    elif key == '前回取得財務データ数':
+                        info['前回取得財務データ数'] = int(value) if value.isdigit() else 0
             
             return info
             
@@ -930,10 +939,130 @@ class StockFinancialDatabase:
         
         return updated_count
     
+    def _get_today_financial_data_count(self):
+        """当日の財務データ数を取得する"""
+        try:
+            current_date = datetime.now().strftime('%Y-%m-%d')
+            today_data = self.get_financial_statements_by_date(current_date)
+            return len(today_data) if not today_data.empty else 0
+        except Exception as e:
+            print(f"当日財務データ数取得中にエラーが発生しました: {e}")
+            return 0
+    
+    def _get_previous_data_count(self):
+        """前回の財務データ数を取得する"""
+        try:
+            status_info = self._parse_status_file_content(f"{self.database_dir}/update_info.txt")
+            return status_info.get('当日取得財務データ数', 0)
+        except Exception as e:
+            print(f"前回財務データ数取得中にエラーが発生しました: {e}")
+            return 0
+    
+    def _check_same_day_updates(self, file_date, current_date):
+        """同じ日でも新規データがあるかチェックする"""
+        if file_date != current_date:
+            return False
+        
+        try:
+            # 当日の財務データ数を取得
+            current_data_count = self._get_today_financial_data_count()
+            if current_data_count == 0:
+                print("当日の財務データが取得できませんでした。")
+                return False
+            
+            # 前回の財務データ数と比較
+            previous_data_count = self._get_previous_data_count()
+            
+            print(f"前回取得財務データ数: {previous_data_count}")
+            print(f"当日取得財務データ数: {current_data_count}")
+            
+            has_new_data = current_data_count > previous_data_count
+            if has_new_data:
+                print(f"当日の新規財務データを検出しました（+{current_data_count - previous_data_count}件）")
+            else:
+                print("当日の新規財務データはありません。")
+            
+            return has_new_data
+            
+        except Exception as e:
+            print(f"当日新規データチェック中にエラーが発生しました: {e}")
+            return False
+    
+    def _perform_same_day_update(self, current_date):
+        """当日のみの更新処理を実行する"""
+        try:
+            print("=== 当日更新処理開始 ===")
+            
+            # 当日の財務データを取得
+            today_data = self.get_financial_statements_by_date(current_date)
+            
+            if today_data.empty:
+                print("当日の新規財務データはありません。")
+                return None
+            
+            # 銘柄コードを収集
+            if 'LocalCode' not in today_data.columns:
+                print("LocalCode列が見つかりません。")
+                return None
+            
+            codes = today_data['LocalCode'].unique()
+            print(f"当日の新規銘柄数: {len(codes)}")
+            
+            # 各銘柄の財務データを更新
+            updated_count = self._update_collected_stocks(codes)
+            
+            # ステータスファイルを保存
+            self._save_same_day_status(current_date, len(codes), updated_count)
+            
+            print("=== 当日更新処理完了 ===")
+            
+            return {
+                'collected_codes': len(codes),
+                'updated_count': updated_count,
+                'update_mode': 'same_day'
+            }
+            
+        except Exception as e:
+            print(f"当日更新処理中にエラーが発生しました: {e}")
+            return None
+    
+    def _save_same_day_status(self, current_date, collected_count, updated_count):
+        """当日更新のステータスファイルを保存する"""
+        try:
+            # 当日の財務データ数を取得
+            today_data_count = self._get_today_financial_data_count()
+            previous_data_count = self._get_previous_data_count()
+            
+            # 統一ファイル名を使用
+            filename = f"{self.database_dir}/update_info.txt"
+            
+            # ファイル内容
+            content = f"""当日財務データ更新状況
+更新日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+処理日: {current_date}
+収集銘柄数: {collected_count:04d}
+更新銘柄数: {updated_count}
+更新モード: 当日更新
+当日取得財務データ数: {today_data_count}
+前回取得財務データ数: {previous_data_count}
+"""
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print(f"当日更新状況を保存しました: {filename}")
+            
+        except Exception as e:
+            print(f"当日更新状況ファイルの保存中にエラーが発生しました: {e}")
+    
     def _save_date_range_status(self, start_date, end_date, collected_count, updated_count):
         """日付範囲更新のステータスファイルを保存する"""
         try:
             current_date = datetime.now().strftime('%Y%m%d')
+            
+            # 当日の財務データ数を取得
+            today_data_count = self._get_today_financial_data_count()
+            previous_data_count = self._get_previous_data_count()
             
             # 統一ファイル名を使用
             filename = f"{self.database_dir}/update_info.txt"
@@ -946,6 +1075,8 @@ class StockFinancialDatabase:
 収集銘柄数: {collected_count:04d}
 更新銘柄数: {updated_count}
 更新モード: 日付範囲更新
+当日取得財務データ数: {today_data_count}
+前回取得財務データ数: {previous_data_count}
 """
             
             with open(filename, 'w', encoding='utf-8') as f:
