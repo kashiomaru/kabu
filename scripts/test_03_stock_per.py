@@ -161,6 +161,7 @@ def extract_financial_metrics(df, code):
         'disclosed_date': latest_data.get('DisclosedDate', 'N/A'),
         'fiscal_year': latest_data.get('FiscalYear', 'N/A'),
         'fiscal_period': latest_data.get('FiscalPeriod', 'N/A'),
+        'doc_type': latest_data.get('TypeOfDocument', 'N/A'),  # 文書タイプ
         'profit': latest_data.get('Profit', None),  # 当期純利益
         'issued_shares': latest_data.get('NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock', None),  # 発行済み株式数
         'earnings_per_share': latest_data.get('EarningsPerShare', None),  # 1株当たり純利益（APIから直接取得）
@@ -189,14 +190,7 @@ def calculate_per(stock_price, financial_metrics):
             try:
                 eps_value = float(api_eps) if isinstance(api_eps, (int, float, str)) else 0
                 
-                if eps_value <= 0:
-                    return {
-                        'per': None,
-                        'eps': eps_value,
-                        'error': 'APIから取得したEPSが0以下です（当期純利益がマイナスまたは0）'
-                    }
-                
-                # PERを計算
+                # PERを計算（EPSがマイナスでも計算する）
                 per = stock_price / eps_value
                 
                 return {
@@ -246,14 +240,7 @@ def calculate_per(stock_price, financial_metrics):
         # J-Quants APIの財務データは円単位で提供されているため、直接計算
         eps = profit_value / shares_value
         
-        if eps <= 0:
-            return {
-                'per': None,
-                'eps': eps,
-                'error': 'EPSが0以下です（当期純利益がマイナスまたは0）'
-            }
-        
-        # PERを計算
+        # PERを計算（EPSがマイナスでも計算する）
         per = stock_price / eps
         
         return {
@@ -284,6 +271,7 @@ def display_per_analysis(stock_price, financial_metrics, per_result):
     print(f"開示日: {financial_metrics['disclosed_date']}")
     print(f"会計年度: {financial_metrics['fiscal_year']}")
     print(f"会計期間: {financial_metrics['fiscal_period']}")
+    print(f"文書タイプ: {financial_metrics['doc_type']}")
     print("=" * 80)
     
     # 基本情報
@@ -351,8 +339,12 @@ def validate_stock_code(code):
     if not code:
         return False
     
-    # 4桁の数字かチェック
-    if not code.isdigit() or len(code) != 4:
+    # 英数字のみかチェック
+    if not code.isalnum():
+        return False
+    
+    # 4桁または5桁かチェック
+    if len(code) not in [4, 5]:
         return False
         
     return True
@@ -365,6 +357,8 @@ def main():
         if len(sys.argv) != 2:
             print("使用方法: python test_03_stock_per.py <銘柄コード>")
             print("例: python test_03_stock_per.py 7203")
+            print("例: python test_03_stock_per.py 6758")
+            print("例: python test_03_stock_per.py AAPL")
             sys.exit(1)
         
         stock_code = sys.argv[1]
@@ -372,7 +366,7 @@ def main():
         # 銘柄コードの検証
         if not validate_stock_code(stock_code):
             print(f"エラー: 無効な銘柄コードです: {stock_code}")
-            print("銘柄コードは4桁の数字で入力してください。")
+            print("銘柄コードは4桁または5桁の英数字で入力してください。")
             sys.exit(1)
         
         # スクリプトのディレクトリを取得

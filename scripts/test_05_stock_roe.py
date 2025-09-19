@@ -349,8 +349,12 @@ def validate_stock_code(code):
     if not code:
         return False
     
-    # 4桁の数字かチェック
-    if not code.isdigit() or len(code) != 4:
+    # 英数字のみかチェック
+    if not code.isalnum():
+        return False
+    
+    # 4桁または5桁かチェック
+    if len(code) not in [4, 5]:
         return False
         
     return True
@@ -363,6 +367,8 @@ def main():
         if len(sys.argv) != 2:
             print("使用方法: python test_05_stock_roe.py <銘柄コード>")
             print("例: python test_05_stock_roe.py 7203")
+            print("例: python test_05_stock_roe.py 6758")
+            print("例: python test_05_stock_roe.py AAPL")
             sys.exit(1)
         
         stock_code = sys.argv[1]
@@ -370,7 +376,7 @@ def main():
         # 銘柄コードの検証
         if not validate_stock_code(stock_code):
             print(f"エラー: 無効な銘柄コードです: {stock_code}")
-            print("銘柄コードは4桁の数字で入力してください。")
+            print("銘柄コードは4桁または5桁の英数字で入力してください。")
             sys.exit(1)
         
         # スクリプトのディレクトリを取得
