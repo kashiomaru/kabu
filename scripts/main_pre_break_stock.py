@@ -1081,8 +1081,8 @@ class PreBreakStockAnalyzer:
                     '前回報告日', '次回報告日予想'
                 ]
                 
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
-                writer.writeheader()
+                # ヘッダー行を出力
+                csvfile.write(','.join(fieldnames) + '\n')
                 
                 for result in results:
                     if result:
@@ -1095,28 +1095,32 @@ class PreBreakStockAnalyzer:
                             except (ValueError, TypeError):
                                 return value
                         
-                    writer.writerow({
-                        '銘柄コード': result.get('code', ''),
-                        '銘柄名': result.get('company_name', ''),
-                        '17業種名': result.get('sector_17', ''),
-                        '33業種名': result.get('sector_33', ''),
-                        '市場': result.get('market', ''),
-                        '株価': format_number(result.get('stock_price', '')),
-                        '時価総額（億円）': format_number(result.get('market_cap', '')),
-                        'PER': format_number(result.get('per', '')),
-                        'ROE': format_number(result.get('roe', '')),
-                        '過去10年利益上昇率平均': format_number(result.get('profit_growth_10y', '')),
-                        '過去1年売上高上昇率_直近1': format_number(result.get('過去1年売上高上昇率_直近1', '')),
-                        '過去1年売上高上昇率_直近2': format_number(result.get('過去1年売上高上昇率_直近2', '')),
-                        '過去1年売上高上昇率_直近3': format_number(result.get('過去1年売上高上昇率_直近3', '')),
-                        '過去1年売上高上昇率_直近4': format_number(result.get('過去1年売上高上昇率_直近4', '')),
-                        '過去1年利益上昇率_直近1': format_number(result.get('過去1年利益上昇率_直近1', '')),
-                        '過去1年利益上昇率_直近2': format_number(result.get('過去1年利益上昇率_直近2', '')),
-                        '過去1年利益上昇率_直近3': format_number(result.get('過去1年利益上昇率_直近3', '')),
-                        '過去1年利益上昇率_直近4': format_number(result.get('過去1年利益上昇率_直近4', '')),
-                        '前回報告日': result.get('last_report_date', ''),
-                        '次回報告日予想': result.get('next_report_date', '')
-                    })
+                        # 各列の値を取得
+                        values = [
+                            result.get('code', ''),
+                            f'"{result.get("company_name", "")}"',  # 銘柄名のみダブルクオートで囲む
+                            result.get('sector_17', ''),
+                            result.get('sector_33', ''),
+                            result.get('market', ''),
+                            format_number(result.get('stock_price', '')),
+                            format_number(result.get('market_cap', '')),
+                            format_number(result.get('per', '')),
+                            format_number(result.get('roe', '')),
+                            format_number(result.get('profit_growth_10y', '')),
+                            format_number(result.get('過去1年売上高上昇率_直近1', '')),
+                            format_number(result.get('過去1年売上高上昇率_直近2', '')),
+                            format_number(result.get('過去1年売上高上昇率_直近3', '')),
+                            format_number(result.get('過去1年売上高上昇率_直近4', '')),
+                            format_number(result.get('過去1年利益上昇率_直近1', '')),
+                            format_number(result.get('過去1年利益上昇率_直近2', '')),
+                            format_number(result.get('過去1年利益上昇率_直近3', '')),
+                            format_number(result.get('過去1年利益上昇率_直近4', '')),
+                            result.get('last_report_date', ''),
+                            result.get('next_report_date', '')
+                        ]
+                        
+                        # CSV行を出力
+                        csvfile.write(','.join(str(v) for v in values) + '\n')
             
             print(f"CSVファイルを出力しました: {filepath}")
             
