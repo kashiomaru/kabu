@@ -59,6 +59,7 @@ class PreBreakStockAnalyzer:
         self.results = []
         self.processed_count = 0
         self.error_count = 0
+        self.company_info_cache = None  # 基本情報のキャッシュ
         
     def _get_client(self):
         """J-Quants APIクライアントを取得する（遅延初期化）"""
@@ -147,7 +148,7 @@ class PreBreakStockAnalyzer:
     
     def get_financial_data(self, code):
         """
-        指定された銘柄の財務データを取得する
+        指定された銘柄の財務データを取得する（計算済み指標のキャッシュ機能付き）
         
         Args:
             code (str): 銘柄コード
@@ -159,19 +160,100 @@ class PreBreakStockAnalyzer:
             # 既存データをチェック
             data = self.db.load_stock_data(code)
             if data is not None:
-                return data
+                # 計算済み指標がメタデータに含まれているかチェック
+                if self._has_cached_metrics(data):
+                    print(f"  キャッシュされた指標を使用: {code}")
+                    return data
+                else:
+                    # 計算済み指標がない場合は計算して保存
+                    print(f"  指標を計算中: {code}")
+                    data = self._calculate_and_cache_metrics(data, code)
+                    if data:
+                        self.db.save_stock_data(code, data)
+                    return data
             
             # データを取得・保存
             financial_data = self.db.get_financial_statements(code)
             if not financial_data.empty:
                 self.db.save_stock_data(code, financial_data)
-                return self.db.load_stock_data(code)
+                data = self.db.load_stock_data(code)
+                # 計算済み指標を追加
+                data = self._calculate_and_cache_metrics(data, code)
+                if data:
+                    self.db.save_stock_data(code, data)
+                return data
             
             return None
             
         except Exception as e:
             print(f"エラー: 銘柄コード {code} の財務データ取得に失敗しました: {e}")
             return None
+    
+    def _has_cached_metrics(self, data):
+        """
+        メタデータに計算済み指標が含まれているかチェックする
+        
+        Args:
+            data (dict): 財務データ
+            
+        Returns:
+            bool: 計算済み指標が含まれているかどうか
+        """
+        if not data or 'metadata' not in data:
+            return False
+        
+        metadata = data['metadata']
+        required_metrics = ['roe', 'profit_growth_10y', 'last_report_date', 'next_report_date']
+        
+        # 必須指標がすべて含まれているかチェック
+        return all(metric in metadata for metric in required_metrics)
+    
+    def _calculate_and_cache_metrics(self, data, code):
+        """
+        財務指標を計算してメタデータにキャッシュする
+        
+        Args:
+            data (dict): 財務データ
+            code (str): 銘柄コード
+            
+        Returns:
+            dict: メタデータに計算済み指標を追加した財務データ
+        """
+        try:
+            if not data or 'metadata' not in data:
+                return data
+            
+            # 計算済み指標が既にある場合はスキップ
+            if self._has_cached_metrics(data):
+                return data
+            
+            print(f"    計算中: ROE, 成長率, 報告日 ({code})")
+            
+            # 各指標を計算
+            roe = self.calculate_roe(data)
+            profit_growth_10y = self.calculate_profit_growth_10years(data)
+            sales_growth_1y_data = self.calculate_sales_growth_1year(data)
+            profit_growth_1y_data = self.calculate_profit_growth_1year(data)
+            last_report_date, next_report_date = self.get_report_dates(data)
+            
+            # メタデータに計算済み指標を追加
+            data['metadata'].update({
+                'roe': roe,
+                'profit_growth_10y': profit_growth_10y,
+                'last_report_date': last_report_date,
+                'next_report_date': next_report_date,
+                'cached_metrics_updated': datetime.now().isoformat()
+            })
+            
+            # 売上高・利益上昇率も追加
+            data['metadata'].update(sales_growth_1y_data)
+            data['metadata'].update(profit_growth_1y_data)
+            
+            return data
+            
+        except Exception as e:
+            print(f"エラー: 指標の計算・キャッシュに失敗しました ({code}): {e}")
+            return data
     
     def calculate_market_cap(self, price_data, financial_data):
         """
@@ -958,9 +1040,46 @@ class PreBreakStockAnalyzer:
             print(f"エラー: 報告日の取得に失敗しました: {e}")
             return None, None
     
+    def _load_company_info_cache(self):
+        """
+        基本情報のキャッシュを一括取得する
+        
+        Returns:
+            dict: 銘柄コードをキーとした基本情報の辞書
+        """
+        if self.company_info_cache is not None:
+            return self.company_info_cache
+        
+        try:
+            print("基本情報を一括取得中...")
+            client = self._get_client()
+            
+            # 銘柄一覧から基本情報を一括取得
+            stock_list = client.get_listed_info()
+            df = pd.DataFrame(stock_list)
+            
+            # 辞書形式でキャッシュ
+            self.company_info_cache = {}
+            for _, row in df.iterrows():
+                code = row.get('Code')
+                if code:
+                    self.company_info_cache[code] = {
+                        'company_name': row.get('CompanyName', 'N/A'),
+                        'market': row.get('MarketCodeName', 'N/A'),
+                        'sector_17': row.get('Sector17CodeName', ''),
+                        'sector_33': row.get('Sector33CodeName', '')
+                    }
+            
+            print(f"基本情報キャッシュ完了: {len(self.company_info_cache)} 件")
+            return self.company_info_cache
+            
+        except Exception as e:
+            print(f"エラー: 基本情報の一括取得に失敗しました: {e}")
+            return {}
+    
     def get_company_info(self, code):
         """
-        銘柄の基本情報（会社名、市場、業種）を取得する
+        銘柄の基本情報（会社名、市場、業種）を取得する（キャッシュ使用）
         
         Args:
             code (str): 銘柄コード
@@ -969,20 +1088,18 @@ class PreBreakStockAnalyzer:
             tuple: (会社名, 市場, 17業種名, 33業種名)
         """
         try:
-            client = self._get_client()
+            # キャッシュを読み込み
+            cache = self._load_company_info_cache()
             
-            # 銘柄一覧から基本情報を取得
-            stock_list = client.get_listed_info()
-            df = pd.DataFrame(stock_list)
-            
-            # 該当する銘柄を検索
-            target_stock = df[df['Code'] == code]
-            if not target_stock.empty:
-                company_name = target_stock.iloc[0].get('CompanyName', 'N/A')
-                market = target_stock.iloc[0].get('MarketCodeName', 'N/A')
-                sector_17 = target_stock.iloc[0].get('Sector17CodeName', '')
-                sector_33 = target_stock.iloc[0].get('Sector33CodeName', '')
-                return company_name, market, sector_17, sector_33
+            # 該当する銘柄の情報を取得
+            if code in cache:
+                info = cache[code]
+                return (
+                    info['company_name'],
+                    info['market'],
+                    info['sector_17'],
+                    info['sector_33']
+                )
             
             return "N/A", "N/A", "", ""
             
@@ -1002,30 +1119,54 @@ class PreBreakStockAnalyzer:
         """
         try:
             print(f"分析中: {code}")
+            start_time = datetime.now()
             
             # 株価データを取得
+            price_start = datetime.now()
             price_data = self.get_stock_price(code)
+            price_time = (datetime.now() - price_start).total_seconds()
             if not price_data:
                 print(f"  警告: 株価データが取得できませんでした")
                 return None
             
             # 財務データを取得
+            financial_start = datetime.now()
             financial_data = self.get_financial_data(code)
+            financial_time = (datetime.now() - financial_start).total_seconds()
             if not financial_data:
                 print(f"  警告: 財務データが取得できませんでした")
                 return None
             
             # 基本情報を取得
+            info_start = datetime.now()
             company_name, market, sector_17, sector_33 = self.get_company_info(code)
+            info_time = (datetime.now() - info_start).total_seconds()
             
-            # 各指標を計算
+            # 各指標を計算（キャッシュされた指標は優先使用）
             market_cap = self.calculate_market_cap(price_data, financial_data)
             per = self.calculate_per(price_data, financial_data)
-            roe = self.calculate_roe(financial_data)
-            profit_growth_10y = self.calculate_profit_growth_10years(financial_data)
-            sales_growth_1y_data = self.calculate_sales_growth_1year(financial_data)
-            profit_growth_1y_data = self.calculate_profit_growth_1year(financial_data)
-            last_report_date, next_report_date = self.get_report_dates(financial_data)
+            
+            # キャッシュされた指標を優先使用
+            metadata = financial_data.get('metadata', {})
+            roe = metadata.get('roe') or self.calculate_roe(financial_data)
+            profit_growth_10y = metadata.get('profit_growth_10y') or self.calculate_profit_growth_10years(financial_data)
+            last_report_date = metadata.get('last_report_date') or self.get_report_dates(financial_data)[0]
+            next_report_date = metadata.get('next_report_date') or self.get_report_dates(financial_data)[1]
+            
+            # 売上高・利益上昇率（キャッシュ優先）
+            sales_growth_1y_data = {}
+            profit_growth_1y_data = {}
+            for i in range(1, 5):
+                sales_key = f'過去1年売上高上昇率_直近{i}'
+                profit_key = f'過去1年利益上昇率_直近{i}'
+                sales_growth_1y_data[sales_key] = metadata.get(sales_key)
+                profit_growth_1y_data[profit_key] = metadata.get(profit_key)
+            
+            # キャッシュされていない場合は計算
+            if not any(sales_growth_1y_data.values()):
+                sales_growth_1y_data = self.calculate_sales_growth_1year(financial_data)
+            if not any(profit_growth_1y_data.values()):
+                profit_growth_1y_data = self.calculate_profit_growth_1year(financial_data)
             
             # 結果をまとめる
             result = {
@@ -1048,7 +1189,10 @@ class PreBreakStockAnalyzer:
             result.update(sales_growth_1y_data)
             result.update(profit_growth_1y_data)
             
+            # 処理時間の詳細表示
+            total_time = (datetime.now() - start_time).total_seconds()
             print(f"  完了: {code} ({company_name})")
+            print(f"    処理時間詳細: 株価={price_time:.2f}s, 財務={financial_time:.2f}s, 基本情報={info_time:.2f}s, 合計={total_time:.2f}s")
             return result
             
         except Exception as e:

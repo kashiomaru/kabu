@@ -140,21 +140,29 @@ class StockFinancialDatabase:
         except Exception as e:
             raise Exception(f"財務データの取得中にエラーが発生しました: {e}")
     
-    def _convert_dataframe_to_json_serializable(self, df):
+    def _convert_dataframe_to_json_serializable(self, data):
         """
-        データフレームをJSONシリアライズ可能な形式に変換する
+        データフレームまたは辞書をJSONシリアライズ可能な形式に変換する
         
         Args:
-            df (pandas.DataFrame): データフレーム
+            data (pandas.DataFrame or dict): データフレームまたは辞書
             
         Returns:
             list: JSONシリアライズ可能な辞書のリスト
         """
-        if df.empty:
+        if isinstance(data, dict):
+            # 辞書の場合はraw_dataを返す
+            if 'raw_data' in data:
+                return data['raw_data']
+            else:
+                return []
+        
+        # pandas.DataFrameの場合
+        if data.empty:
             return []
         
         raw_data_list = []
-        for _, row in df.iterrows():
+        for _, row in data.iterrows():
             row_dict = {}
             for col, value in row.items():
                 if pd.isna(value):
@@ -183,17 +191,41 @@ class StockFinancialDatabase:
             filename = f"{self.database_dir}/{normalized_code}.json"
             
             # メタデータを追加
-            data_with_metadata = {
-                "metadata": {
+            if isinstance(financial_data, dict) and 'metadata' in financial_data:
+                # 既存の辞書データ（メタデータ付き）の場合
+                data_with_metadata = financial_data.copy()
+                # メタデータを更新
+                data_with_metadata['metadata'].update({
                     "code": normalized_code,
                     "original_code": code,
                     "retrieved_datetime": datetime.now().isoformat(),
-                    "data_count": len(financial_data) if not financial_data.empty else 0,
+                    "data_count": len(financial_data.get('raw_data', [])),
                     "api_source": "J-Quants API",
-                    "file_created": datetime.now().isoformat()
-                },
-                "raw_data": self._convert_dataframe_to_json_serializable(financial_data)
-            }
+                    "file_updated": datetime.now().isoformat()
+                })
+            else:
+                # 新規データまたはDataFrameの場合
+                # データ型に応じてdata_countを計算
+                if isinstance(financial_data, dict):
+                    if 'raw_data' in financial_data:
+                        data_count = len(financial_data['raw_data'])
+                    else:
+                        data_count = 0
+                else:
+                    # pandas.DataFrameの場合
+                    data_count = len(financial_data) if not financial_data.empty else 0
+                
+                data_with_metadata = {
+                    "metadata": {
+                        "code": normalized_code,
+                        "original_code": code,
+                        "retrieved_datetime": datetime.now().isoformat(),
+                        "data_count": data_count,
+                        "api_source": "J-Quants API",
+                        "file_created": datetime.now().isoformat()
+                    },
+                    "raw_data": self._convert_dataframe_to_json_serializable(financial_data)
+                }
             
             # JSONファイルとして保存
             with open(filename, 'w', encoding='utf-8') as f:
