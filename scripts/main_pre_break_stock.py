@@ -175,14 +175,14 @@ class PreBreakStockAnalyzer:
     
     def calculate_market_cap(self, price_data, financial_data):
         """
-        時価総額を計算する
+        時価総額を計算する（億円単位）
         
         Args:
             price_data (dict): 株価データ
             financial_data (dict): 財務データ
             
         Returns:
-            float: 時価総額（計算できない場合はNone）
+            float: 時価総額（億円単位、計算できない場合はNone）
         """
         try:
             if not price_data or not financial_data:
@@ -204,9 +204,12 @@ class PreBreakStockAnalyzer:
             if issued_shares is None:
                 return None
             
-            # 時価総額 = 株価 × 発行済み株式数
-            market_cap = float(close_price) * float(issued_shares)
-            return market_cap
+            # 時価総額 = 株価 × 発行済み株式数（円単位）
+            market_cap_yen = float(close_price) * float(issued_shares)
+            
+            # 億円単位に変換（1億 = 100,000,000）
+            market_cap_billion = market_cap_yen / 100000000
+            return market_cap_billion
             
         except Exception as e:
             print(f"エラー: 時価総額の計算に失敗しました: {e}")
@@ -957,13 +960,13 @@ class PreBreakStockAnalyzer:
     
     def get_company_info(self, code):
         """
-        銘柄の基本情報（会社名、市場）を取得する
+        銘柄の基本情報（会社名、市場、業種）を取得する
         
         Args:
             code (str): 銘柄コード
             
         Returns:
-            tuple: (会社名, 市場)
+            tuple: (会社名, 市場, 17業種名, 33業種名)
         """
         try:
             client = self._get_client()
@@ -977,13 +980,15 @@ class PreBreakStockAnalyzer:
             if not target_stock.empty:
                 company_name = target_stock.iloc[0].get('CompanyName', 'N/A')
                 market = target_stock.iloc[0].get('MarketCodeName', 'N/A')
-                return company_name, market
+                sector_17 = target_stock.iloc[0].get('Sector17CodeName', '')
+                sector_33 = target_stock.iloc[0].get('Sector33CodeName', '')
+                return company_name, market, sector_17, sector_33
             
-            return "N/A", "N/A"
+            return "N/A", "N/A", "", ""
             
         except Exception as e:
             print(f"警告: 銘柄コード {code} の基本情報取得に失敗しました: {e}")
-            return "N/A", "N/A"
+            return "N/A", "N/A", "", ""
     
     def analyze_single_stock(self, code):
         """
@@ -1011,7 +1016,7 @@ class PreBreakStockAnalyzer:
                 return None
             
             # 基本情報を取得
-            company_name, market = self.get_company_info(code)
+            company_name, market, sector_17, sector_33 = self.get_company_info(code)
             
             # 各指標を計算
             market_cap = self.calculate_market_cap(price_data, financial_data)
@@ -1026,6 +1031,8 @@ class PreBreakStockAnalyzer:
             result = {
                 'code': code,
                 'company_name': company_name,
+                'sector_17': sector_17,
+                'sector_33': sector_33,
                 'market': market,
                 'stock_price': price_data.get('close'),
                 'market_cap': market_cap,
@@ -1067,7 +1074,7 @@ class PreBreakStockAnalyzer:
             # CSVファイルに出力
             with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
                 fieldnames = [
-                    '銘柄コード', '銘柄名', '市場', '株価', '時価総額', 'PER', 'ROE',
+                    '銘柄コード', '銘柄名', '17業種名', '33業種名', '市場', '株価', '時価総額（億円）', 'PER', 'ROE',
                     '過去10年利益上昇率平均',
                     '過去1年売上高上昇率_直近1', '過去1年売上高上昇率_直近2', '過去1年売上高上昇率_直近3', '過去1年売上高上昇率_直近4',
                     '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4',
@@ -1091,9 +1098,11 @@ class PreBreakStockAnalyzer:
                     writer.writerow({
                         '銘柄コード': result.get('code', ''),
                         '銘柄名': result.get('company_name', ''),
+                        '17業種名': result.get('sector_17', ''),
+                        '33業種名': result.get('sector_33', ''),
                         '市場': result.get('market', ''),
                         '株価': format_number(result.get('stock_price', '')),
-                        '時価総額': format_number(result.get('market_cap', '')),
+                        '時価総額（億円）': format_number(result.get('market_cap', '')),
                         'PER': format_number(result.get('per', '')),
                         'ROE': format_number(result.get('roe', '')),
                         '過去10年利益上昇率平均': format_number(result.get('profit_growth_10y', '')),
