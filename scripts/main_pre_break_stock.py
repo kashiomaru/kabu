@@ -1035,6 +1035,7 @@ class PreBreakStockAnalyzer:
                 'sector_33': sector_33,
                 'market': market,
                 'stock_price': price_data.get('close'),
+                'volume': price_data.get('volume'),  # 出来高を追加
                 'market_cap': market_cap,
                 'per': per,
                 'roe': roe,
@@ -1074,7 +1075,7 @@ class PreBreakStockAnalyzer:
             # CSVファイルに出力
             with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
                 fieldnames = [
-                    '銘柄コード', '銘柄名', '17業種名', '33業種名', '市場', '株価', '時価総額（億円）', 'PER', 'ROE',
+                    '銘柄コード', '銘柄名', '17業種名', '33業種名', '市場', '株価', '出来高', '時価総額（億円）', 'PER', 'ROE',
                     '過去10年利益上昇率平均',
                     '過去1年売上高上昇率_直近1', '過去1年売上高上昇率_直近2', '過去1年売上高上昇率_直近3', '過去1年売上高上昇率_直近4',
                     '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4',
@@ -1103,6 +1104,7 @@ class PreBreakStockAnalyzer:
                             result.get('sector_33', ''),
                             result.get('market', ''),
                             format_number(result.get('stock_price', '')),
+                            result.get('volume', ''),  # 出来高を追加
                             format_number(result.get('market_cap', '')),
                             format_number(result.get('per', '')),
                             format_number(result.get('roe', '')),
