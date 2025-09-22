@@ -977,6 +977,67 @@ class PreBreakStockAnalyzer:
             print(f"エラー: 過去1年利益上昇率の計算に失敗しました: {e}")
             return {f'過去1年利益上昇率_直近{i}': None for i in range(1, 5)}
     
+    def calculate_score(self, financial_data):
+        """
+        スコアを計算する
+        
+        Args:
+            financial_data (dict): 財務データ
+            
+        Returns:
+            float: スコア（計算できない場合はNone）
+        """
+        try:
+            if not financial_data or 'metadata' not in financial_data:
+                return None
+            
+            metadata = financial_data['metadata']
+            score = 0.0
+            
+            # profit_growth_10y: 0~10にクランプし、10で割った値の少数第1位まで
+            profit_growth_10y = metadata.get('profit_growth_10y')
+            if profit_growth_10y is not None:
+                try:
+                    growth_value = float(profit_growth_10y)
+                    # 0~10にクランプ
+                    clamped_value = max(0, min(10, growth_value))
+                    # 10で割った値の少数第1位まで
+                    score += round(clamped_value / 10, 1)
+                except (ValueError, TypeError):
+                    pass
+            
+            # 過去1年売上高上昇率（直近1~4）
+            sales_weights = [0.4, 0.3, 0.2, 0.1]
+            for i in range(1, 5):
+                sales_key = f'過去1年売上高上昇率_直近{i}'
+                sales_growth = metadata.get(sales_key)
+                if sales_growth is not None:
+                    try:
+                        growth_value = float(sales_growth)
+                        if growth_value >= 10:
+                            score += sales_weights[i-1]
+                    except (ValueError, TypeError):
+                        pass
+            
+            # 過去1年利益上昇率（直近1~4）
+            profit_weights = [0.4, 0.3, 0.2, 0.1]
+            for i in range(1, 5):
+                profit_key = f'過去1年利益上昇率_直近{i}'
+                profit_growth = metadata.get(profit_key)
+                if profit_growth is not None:
+                    try:
+                        growth_value = float(profit_growth)
+                        if growth_value >= 20:
+                            score += profit_weights[i-1]
+                    except (ValueError, TypeError):
+                        pass
+            
+            return round(score, 1)
+            
+        except Exception as e:
+            print(f"エラー: スコアの計算に失敗しました: {e}")
+            return None
+    
     def get_report_dates(self, financial_data):
         """
         前回報告日と次回報告日（予想）を取得する
@@ -1168,6 +1229,9 @@ class PreBreakStockAnalyzer:
             if not any(profit_growth_1y_data.values()):
                 profit_growth_1y_data = self.calculate_profit_growth_1year(financial_data)
             
+            # スコアを計算
+            score = self.calculate_score(financial_data)
+            
             # 結果をまとめる
             result = {
                 'code': code,
@@ -1181,6 +1245,7 @@ class PreBreakStockAnalyzer:
                 'per': per,
                 'roe': roe,
                 'profit_growth_10y': profit_growth_10y,
+                'score': score,
                 'last_report_date': last_report_date,
                 'next_report_date': next_report_date
             }
@@ -1223,7 +1288,7 @@ class PreBreakStockAnalyzer:
                     '過去10年利益上昇率平均',
                     '過去1年売上高上昇率_直近1', '過去1年売上高上昇率_直近2', '過去1年売上高上昇率_直近3', '過去1年売上高上昇率_直近4',
                     '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4',
-                    '前回報告日', '次回報告日予想'
+                    'スコア', '前回報告日', '次回報告日予想'
                 ]
                 
                 # ヘッダー行を出力
@@ -1261,6 +1326,7 @@ class PreBreakStockAnalyzer:
                             format_number(result.get('過去1年利益上昇率_直近2', '')),
                             format_number(result.get('過去1年利益上昇率_直近3', '')),
                             format_number(result.get('過去1年利益上昇率_直近4', '')),
+                            format_number(result.get('score', '')),
                             result.get('last_report_date', ''),
                             result.get('next_report_date', '')
                         ]

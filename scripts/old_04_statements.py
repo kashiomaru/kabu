@@ -519,6 +519,64 @@ def calculate_growth_rates(df):
     return result_df
 
 
+def calculate_score(result):
+    """
+    スコアを計算する
+    
+    Args:
+        result (dict): 計算済みの財務指標の辞書
+        
+    Returns:
+        float: スコア（計算できない場合はNone）
+    """
+    try:
+        score = 0.0
+        
+        # profit_growth_10y: 0~10にクランプし、10で割った値の少数第1位まで
+        profit_growth_10y = result.get('過去10年利益上昇率平均')
+        if profit_growth_10y is not None:
+            try:
+                growth_value = float(profit_growth_10y)
+                # 0~10にクランプ
+                clamped_value = max(0, min(10, growth_value))
+                # 10で割った値の少数第1位まで
+                score += round(clamped_value / 10, 1)
+            except (ValueError, TypeError):
+                pass
+        
+        # 過去1年売上高上昇率（直近1~4）
+        sales_weights = [0.4, 0.3, 0.2, 0.1]
+        for i in range(1, 5):
+            sales_key = f'過去1年売上高上昇率_直近{i}'
+            sales_growth = result.get(sales_key)
+            if sales_growth is not None:
+                try:
+                    growth_value = float(sales_growth)
+                    if growth_value >= 10:
+                        score += sales_weights[i-1]
+                except (ValueError, TypeError):
+                    pass
+        
+        # 過去1年利益上昇率（直近1~4）
+        profit_weights = [0.4, 0.3, 0.2, 0.1]
+        for i in range(1, 5):
+            profit_key = f'過去1年利益上昇率_直近{i}'
+            profit_growth = result.get(profit_key)
+            if profit_growth is not None:
+                try:
+                    growth_value = float(profit_growth)
+                    if growth_value >= 20:
+                        score += profit_weights[i-1]
+                except (ValueError, TypeError):
+                    pass
+        
+        return round(score, 1)
+        
+    except Exception as e:
+        print(f"    エラー: スコアの計算に失敗しました: {e}")
+        return None
+
+
 def process_stock_statements(client, code, company_name):
     """
     単一銘柄の財務指標を計算する
@@ -640,6 +698,14 @@ def process_stock_statements(client, code, company_name):
             result[f'過去1年利益上昇率_直近{i}'] = None
         print(f"    過去3年のデータなし")
     
+    # スコアを計算
+    score = calculate_score(result)
+    result['スコア'] = score
+    if score is not None:
+        print(f"    スコア: {score}")
+    else:
+        print(f"    スコア: 計算不可")
+    
     return result
 
 
@@ -688,7 +754,8 @@ def main():
         new_columns = [
             '過去10年利益上昇率平均',
             '過去1年売上高上昇率_直近1', '過去1年売上高上昇率_直近2', '過去1年売上高上昇率_直近3', '過去1年売上高上昇率_直近4',
-            '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4'
+            '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4',
+            'スコア'
         ]
         
         for col in new_columns:
