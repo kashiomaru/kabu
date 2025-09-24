@@ -827,27 +827,49 @@ class IntegratedStockAnalyzer:
                     'スコア'
                 ]
                 
-                # 概要フィールドのみをダブルクオートで囲むためのカスタムquoting設定
-                class CustomQuoting:
-                    def __init__(self, fieldnames):
-                        self.fieldnames = fieldnames
-                    
-                    def __call__(self, fieldname):
-                        if fieldname == '概要':
-                            return csv.QUOTE_ALL
-                        else:
-                            return csv.QUOTE_MINIMAL
-                
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
-                
-                writer.writeheader()
+                # ヘッダー行を出力
+                csvfile.write(','.join(fieldnames) + '\n')
                 
                 # 各行を処理して概要フィールドのみをダブルクオートで囲む
                 for row in data:
-                    # 概要フィールドの値をダブルクオートで囲む
-                    if '概要' in row and row['概要'] is not None:
-                        row['概要'] = f'"{row["概要"]}"'
-                    writer.writerow(row)
+                    # 数値を小数点第1位までに丸める関数
+                    def format_number(value):
+                        if value is None or value == '':
+                            return ''
+                        try:
+                            return round(float(value), 1)
+                        except (ValueError, TypeError):
+                            return value
+                    
+                    # 各列の値を取得（株価と概要のみダブルクオートで囲む）
+                    values = [
+                        row.get('コード', ''),
+                        row.get('銘柄名', ''),
+                        row.get('市場', ''),
+                        f'"{row.get("株価", "")}"',  # 株価をダブルクオートで囲む
+                        f'"{row.get("前日比", "")}"',
+                        row.get('前日比（％）', ''),
+                        format_number(row.get('PER', '')),
+                        format_number(row.get('PBR', '')),
+                        row.get('利回り', ''),
+                        format_number(row.get('時価総額', '')),
+                        row.get('業種', ''),
+                        f'"{row.get("概要", "")}"',  # 概要をダブルクオートで囲む
+                        format_number(row.get('ROE', '')),
+                        format_number(row.get('過去10年利益上昇率平均', '')),
+                        format_number(row.get('過去1年売上高上昇率_直近1', '')),
+                        format_number(row.get('過去1年売上高上昇率_直近2', '')),
+                        format_number(row.get('過去1年売上高上昇率_直近3', '')),
+                        format_number(row.get('過去1年売上高上昇率_直近4', '')),
+                        format_number(row.get('過去1年利益上昇率_直近1', '')),
+                        format_number(row.get('過去1年利益上昇率_直近2', '')),
+                        format_number(row.get('過去1年利益上昇率_直近3', '')),
+                        format_number(row.get('過去1年利益上昇率_直近4', '')),
+                        format_number(row.get('スコア', ''))
+                    ]
+                    
+                    # CSV行を出力
+                    csvfile.write(','.join(str(v) for v in values) + '\n')
             
             print(f"CSVファイルを保存しました: {output_path}")
             print(f"抽出件数: {len(data)}件")
