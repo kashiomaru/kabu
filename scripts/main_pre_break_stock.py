@@ -86,16 +86,18 @@ class PreBreakStockAnalyzer:
             print(f"エラー: 銘柄リストの取得に失敗しました: {e}")
             return []
     
-    def get_stock_price(self, code, days=7):
+    def get_stock_price(self, code, days=365):
         """
-        指定された銘柄の最新株価を取得する
+        指定された銘柄の過去指定日数分の株価データを取得する
         
         Args:
             code (str): 銘柄コード
-            days (int): 取得する日数（デフォルト7日）
+            days (int): 取得する日数（デフォルト365日）
             
         Returns:
             dict: 株価データ（取得失敗時はNone）
+                - 'latest': 最新の株価データ（既存用途用）
+                - 'dataframe': 全期間のデータフレーム（新高値分析用）
         """
         try:
             client = self._get_client()
@@ -104,7 +106,7 @@ class PreBreakStockAnalyzer:
             normalized_code = self.db._normalize_stock_code(code)
             print(f"  正規化後コード: {normalized_code}")
             
-            # 最新の株価データを取得（過去指定日数間）
+            # 過去指定日数間の株価データを取得
             end_date = datetime.now().strftime('%Y%m%d')
             start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
             
@@ -132,13 +134,16 @@ class PreBreakStockAnalyzer:
             latest_data = df.iloc[0]
             
             return {
-                'code': code,
-                'date': latest_data.get('Date'),
-                'close': latest_data.get('Close'),
-                'open': latest_data.get('Open'),
-                'high': latest_data.get('High'),
-                'low': latest_data.get('Low'),
-                'volume': latest_data.get('Volume')
+                'latest': {
+                    'code': code,
+                    'date': latest_data.get('Date'),
+                    'close': latest_data.get('Close'),
+                    'open': latest_data.get('Open'),
+                    'high': latest_data.get('High'),
+                    'low': latest_data.get('Low'),
+                    'volume': latest_data.get('Volume')
+                },
+                'dataframe': df
             }
             
         except Exception as e:
@@ -254,6 +259,57 @@ class PreBreakStockAnalyzer:
         except Exception as e:
             print(f"エラー: 指標の計算・キャッシュに失敗しました ({code}): {e}")
             return data
+    
+    def analyze_new_highs(self, price_data_df):
+        """
+        過去1年のデータから新高値の分析を行う
+        
+        Args:
+            price_data_df (pandas.DataFrame): 株価データのデータフレーム（日付順にソート済み）
+            
+        Returns:
+            dict: 新高値分析結果
+        """
+        if price_data_df.empty or 'High' not in price_data_df.columns:
+            return {
+                'is_latest_new_high': False,
+                'new_high_count': 0
+            }
+        
+        # 高値データを取得（欠損値を除外）
+        high_prices = price_data_df['High'].dropna()
+        if high_prices.empty:
+            return {
+                'is_latest_new_high': False,
+                'new_high_count': 0
+            }
+        
+        # 過去最高値を初期化
+        past_highest = 0
+        new_high_count = 0
+        
+        # 日付順（古い順）にソートして処理
+        df_sorted = price_data_df.sort_values('Date', ascending=True).reset_index(drop=True)
+        
+        for i, row in df_sorted.iterrows():
+            current_high = row.get('High')
+            
+            if current_high is not None and not pd.isna(current_high):
+                # 新高値かどうかを判定
+                if current_high > past_highest:
+                    new_high_count += 1
+                    past_highest = current_high
+        
+        # 最新日が新高値かどうかを判定
+        latest_high = price_data_df.iloc[0].get('High') if not price_data_df.empty else None
+        is_latest_new_high = (latest_high is not None and 
+                             not pd.isna(latest_high) and 
+                             latest_high == past_highest)
+        
+        return {
+            'is_latest_new_high': is_latest_new_high,
+            'new_high_count': new_high_count
+        }
     
     def calculate_market_cap(self, price_data, financial_data):
         """
@@ -1182,13 +1238,17 @@ class PreBreakStockAnalyzer:
             print(f"分析中: {code}")
             start_time = datetime.now()
             
-            # 株価データを取得
+            # 株価データを取得（過去1年分）
             price_start = datetime.now()
             price_data = self.get_stock_price(code)
             price_time = (datetime.now() - price_start).total_seconds()
             if not price_data:
                 print(f"  警告: 株価データが取得できませんでした")
                 return None
+            
+            # 最新データと全期間データを分離
+            latest_price_data = price_data['latest']
+            price_dataframe = price_data['dataframe']
             
             # 財務データを取得
             financial_start = datetime.now()
@@ -1203,9 +1263,12 @@ class PreBreakStockAnalyzer:
             company_name, market, sector_17, sector_33 = self.get_company_info(code)
             info_time = (datetime.now() - info_start).total_seconds()
             
+            # 新高値分析を実行
+            new_high_analysis = self.analyze_new_highs(price_dataframe)
+            
             # 各指標を計算（キャッシュされた指標は優先使用）
-            market_cap = self.calculate_market_cap(price_data, financial_data)
-            per = self.calculate_per(price_data, financial_data)
+            market_cap = self.calculate_market_cap(latest_price_data, financial_data)
+            per = self.calculate_per(latest_price_data, financial_data)
             
             # キャッシュされた指標を優先使用
             metadata = financial_data.get('metadata', {})
@@ -1239,15 +1302,17 @@ class PreBreakStockAnalyzer:
                 'sector_17': sector_17,
                 'sector_33': sector_33,
                 'market': market,
-                'stock_price': price_data.get('close'),
-                'volume': price_data.get('volume'),  # 出来高を追加
+                'stock_price': latest_price_data.get('close'),
+                'volume': latest_price_data.get('volume'),  # 出来高を追加
                 'market_cap': market_cap,
                 'per': per,
                 'roe': roe,
                 'profit_growth_10y': profit_growth_10y,
                 'score': score,
                 'last_report_date': last_report_date,
-                'next_report_date': next_report_date
+                'next_report_date': next_report_date,
+                'new_high_count': new_high_analysis['new_high_count'],
+                'is_latest_new_high': new_high_analysis['is_latest_new_high']
             }
             
             # 直近4期間の売上高・利益上昇率を追加
@@ -1288,7 +1353,7 @@ class PreBreakStockAnalyzer:
                     '過去10年利益上昇率平均',
                     '過去1年売上高上昇率_直近1', '過去1年売上高上昇率_直近2', '過去1年売上高上昇率_直近3', '過去1年売上高上昇率_直近4',
                     '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4',
-                    'スコア', '前回報告日', '次回報告日予想'
+                    'スコア', '前回報告日', '次回報告日予想', '新高値回数', '最新日で新高値'
                 ]
                 
                 # ヘッダー行を出力
@@ -1328,7 +1393,9 @@ class PreBreakStockAnalyzer:
                             format_number(result.get('過去1年利益上昇率_直近4', '')),
                             format_number(result.get('score', '')),
                             result.get('last_report_date', ''),
-                            result.get('next_report_date', '')
+                            result.get('next_report_date', ''),
+                            result.get('new_high_count', ''),
+                            'はい' if result.get('is_latest_new_high') else 'いいえ'
                         ]
                         
                         # CSV行を出力
