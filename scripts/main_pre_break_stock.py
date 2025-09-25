@@ -32,11 +32,163 @@ import os
 import sys
 import csv
 import time
+import random
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
 import pandas as pd
 import jquantsapi
+import requests
+from bs4 import BeautifulSoup
 from stock_database import StockFinancialDatabase
+
+
+class TradersWebScraper:
+    """トレーダーズ・ウェブ決算発表スケジュール取得クラス"""
+    
+    def __init__(self, max_pages: int = 10):
+        """
+        初期化
+        
+        Args:
+            max_pages (int): 最大取得ページ数
+        """
+        self.max_pages = max_pages
+        self.session = requests.Session()
+        self.base_url = "https://www.traders.co.jp/market_jp/earnings_calendar/all/all_ex_etf"
+        self.earnings_data = {}
+        
+    def _get_headers(self) -> Dict[str, str]:
+        """HTTPリクエストヘッダーを取得する"""
+        return {
+            'User-Agent': (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+            ),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+    
+    def _fetch_html_from_url(self, url: str, max_retries: int = 3, delay: int = 1) -> Optional[str]:
+        """URLからHTMLコンテンツを取得する"""
+        headers = self._get_headers()
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(url, headers=headers, timeout=30)
+                response.raise_for_status()
+                response.encoding = response.apparent_encoding
+                return response.text
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                else:
+                    return None
+        return None
+    
+    def _extract_earnings_data_from_html(self, html_content: str) -> List[Dict[str, Any]]:
+        """HTMLコンテンツから決算発表情報を抽出する"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 決算発表テーブルを検索
+            table = soup.find('table', class_='data_table table inner_elm')
+            if not table:
+                return []
+            
+            # tbody内の行を取得
+            tbody = table.find('tbody')
+            if not tbody:
+                return []
+            
+            rows = tbody.find_all('tr')
+            if not rows:
+                return []
+            
+            # ヘッダー行をスキップ（最初の行）
+            data_rows = rows[1:] if len(rows) > 1 else []
+            
+            page_data = []
+            for row in data_rows:
+                try:
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) >= 6:  # 必要な列数があるかチェック
+                        # 発表日を取得
+                        announcement_date = cells[0].get_text(strip=True)
+                        
+                        # 銘柄名とコードを取得
+                        company_cell = cells[2]
+                        company_link = company_cell.find('a')
+                        company_name = company_link.get_text(strip=True) if company_link else ""
+                        
+                        # 銘柄コードと市場を取得
+                        code_market_text = company_cell.get_text(strip=True)
+                        code_match = re.search(r'\((\d+)/([^)]+)\)', code_market_text)
+                        stock_code = code_match.group(1) if code_match else ""
+                        
+                        # 決算種別を取得
+                        earnings_type = cells[3].get_text(strip=True)
+                        
+                        # データを辞書として保存
+                        page_data.append({
+                            'code': stock_code,
+                            'announcement_date': announcement_date,
+                            'earnings_type': earnings_type
+                        })
+                        
+                except (IndexError, AttributeError) as e:
+                    continue
+            
+            return page_data
+            
+        except Exception as e:
+            return []
+    
+    def fetch_earnings_schedule(self) -> Dict[str, Dict[str, str]]:
+        """決算発表スケジュールを取得する"""
+        print("決算発表スケジュールを取得中...")
+        
+        all_data = []
+        for page in range(1, self.max_pages + 1):
+            url = f"{self.base_url}/{page}?term=future"
+            html_content = self._fetch_html_from_url(url)
+            if html_content:
+                page_data = self._extract_earnings_data_from_html(html_content)
+                all_data.extend(page_data)
+                time.sleep(random.uniform(0.5, 1.0))
+        
+        # 銘柄コードをキーとした辞書に変換
+        earnings_dict = {}
+        for item in all_data:
+            code = item.get('code')
+            if code:
+                earnings_dict[code] = {
+                    'announcement_date': item.get('announcement_date'),
+                    'earnings_type': item.get('earnings_type')
+                }
+        
+        print(f"決算発表スケジュール取得完了: {len(earnings_dict)} 銘柄")
+        self.earnings_data = earnings_dict
+        return earnings_dict
+    
+    def get_earnings_info(self, code: str) -> Optional[Dict[str, str]]:
+        """指定された銘柄コードの決算情報を取得する"""
+        # 5桁の銘柄コードを4桁に変換して検索
+        if len(code) == 5 and code.endswith('0'):
+            # 後ろの0を除去（例：13010 → 1301）
+            short_code = code[:-1]
+        elif len(code) == 5:
+            # 5桁で後ろが0でない場合はそのまま使用
+            short_code = code
+        else:
+            # 4桁以下の場合はそのまま使用
+            short_code = code
+        
+        return self.earnings_data.get(short_code)
 
 
 class PreBreakStockAnalyzer:
@@ -60,12 +212,19 @@ class PreBreakStockAnalyzer:
         self.processed_count = 0
         self.error_count = 0
         self.company_info_cache = None  # 基本情報のキャッシュ
+        self.earnings_scraper = None  # 決算予定日取得用スクレイパー
         
     def _get_client(self):
         """J-Quants APIクライアントを取得する（遅延初期化）"""
         if self.client is None:
             self.client = self.db._get_client()
         return self.client
+    
+    def _get_earnings_scraper(self):
+        """決算予定日取得スクレイパーを取得する（遅延初期化）"""
+        if self.earnings_scraper is None:
+            self.earnings_scraper = TradersWebScraper(max_pages=5)  # 5ページ分取得
+        return self.earnings_scraper
     
     def get_market_stocks(self, markets=['プライム', 'スタンダード', 'グロース']):
         """
@@ -1275,7 +1434,18 @@ class PreBreakStockAnalyzer:
             roe = metadata.get('roe') or self.calculate_roe(financial_data)
             profit_growth_10y = metadata.get('profit_growth_10y') or self.calculate_profit_growth_10years(financial_data)
             last_report_date = metadata.get('last_report_date') or self.get_report_dates(financial_data)[0]
-            next_report_date = metadata.get('next_report_date') or self.get_report_dates(financial_data)[1]
+            calculated_next_report_date = metadata.get('next_report_date') or self.get_report_dates(financial_data)[1]
+            
+            # 決算予定日データを取得
+            earnings_info = self._get_earnings_scraper().get_earnings_info(code)
+            if earnings_info:
+                # 実際の決算予定日データがある場合
+                next_report_date = earnings_info.get('announcement_date', '')
+                earnings_type = earnings_info.get('earnings_type', '')
+            else:
+                # 計算値を使用する場合（?を付ける）
+                next_report_date = f"{calculated_next_report_date} ?" if calculated_next_report_date else ""
+                earnings_type = ""
             
             # 売上高・利益上昇率（キャッシュ優先）
             sales_growth_1y_data = {}
@@ -1311,6 +1481,7 @@ class PreBreakStockAnalyzer:
                 'score': score,
                 'last_report_date': last_report_date,
                 'next_report_date': next_report_date,
+                'earnings_type': earnings_type,  # 決算種別を追加
                 'new_high_count': new_high_analysis['new_high_count'],
                 'is_latest_new_high': new_high_analysis['is_latest_new_high']
             }
@@ -1353,7 +1524,7 @@ class PreBreakStockAnalyzer:
                     '過去10年利益上昇率平均',
                     '過去1年売上高上昇率_直近1', '過去1年売上高上昇率_直近2', '過去1年売上高上昇率_直近3', '過去1年売上高上昇率_直近4',
                     '過去1年利益上昇率_直近1', '過去1年利益上昇率_直近2', '過去1年利益上昇率_直近3', '過去1年利益上昇率_直近4',
-                    'スコア', '前回報告日', '次回報告日予想', '新高値回数', '最新日で新高値'
+                    'スコア', '前回報告日', '次回報告日', '決算種別', '新高値回数', '最新日で新高値'
                 ]
                 
                 # ヘッダー行を出力
@@ -1370,9 +1541,17 @@ class PreBreakStockAnalyzer:
                             except (ValueError, TypeError):
                                 return value
                         
+                        # 銘柄コードを4桁に変換（CSV出力時のみ）
+                        code = result.get('code', '')
+                        if len(code) == 5 and code.endswith('0'):
+                            # 後ろの0を除去（例：13010 → 1301）
+                            csv_code = code[:-1]
+                        else:
+                            csv_code = code
+                        
                         # 各列の値を取得
                         values = [
-                            result.get('code', ''),
+                            csv_code,  # 4桁に変換された銘柄コード
                             f'"{result.get("company_name", "")}"',  # 銘柄名のみダブルクオートで囲む
                             result.get('sector_17', ''),
                             result.get('sector_33', ''),
@@ -1394,6 +1573,7 @@ class PreBreakStockAnalyzer:
                             format_number(result.get('score', '')),
                             result.get('last_report_date', ''),
                             result.get('next_report_date', ''),
+                            result.get('earnings_type', ''),  # 決算種別を追加
                             result.get('new_high_count', ''),
                             'はい' if result.get('is_latest_new_high') else 'いいえ'
                         ]
@@ -1431,6 +1611,12 @@ class PreBreakStockAnalyzer:
                 print(f"テストモード: 処理銘柄数を {max_stocks} 件に制限しました")
             
             print(f"分析対象銘柄数: {len(stock_codes)} 件")
+            print("-" * 80)
+            
+            # 決算予定日データを事前に取得
+            print("決算予定日データを取得中...")
+            self._get_earnings_scraper().fetch_earnings_schedule()
+            print("決算予定日データ取得完了")
             print("-" * 80)
             
             # 各銘柄を分析
