@@ -181,7 +181,7 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
         df: 歩み値データのDataFrame（datetime, price, volume列が必要）
         
     Returns:
-        pd.DataFrame: 1分足データ（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5）
+        pd.DataFrame: 1分足データ（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、当足で勝ち、次足で勝ち、勝ち、最低下落幅）
     """
     if df.empty:
         return pd.DataFrame()
@@ -240,8 +240,48 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     # 出来高移動平均5（出来高の5期間移動平均）を計算
     one_minute_data['出来高MA5'] = one_minute_data['出来高'].rolling(window=5, min_periods=1).mean()
     
-    # 列の順序を整理（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5）
-    result = one_minute_data[['時刻', '高値', '始値', '終値', '安値', '出来高', 'VWAP', 'SMA5', '出来高MA5']].copy()
+    # 価格帯を計算（前の足の終値を100で割って切り捨て、100を掛ける）
+    # ROUNDDOWN(前の足の終値/100,0)*100
+    prev_close = one_minute_data['終値'].shift(1)  # 前の足の終値
+    # 最初の行は前の足がないので、その行自身の終値を使う
+    prev_close = prev_close.fillna(one_minute_data['終値'])
+    one_minute_data['価格帯'] = (np.floor(prev_close / 100) * 100).astype(int)
+    
+    # 下落幅を計算（前の足の終値 - 安値）
+    one_minute_data['下落幅'] = prev_close - one_minute_data['安値']
+    
+    # 下ヒゲを計算（MIN(始値,終値) - 安値）
+    one_minute_data['下ヒゲ'] = np.minimum(one_minute_data['始値'], one_minute_data['終値']) - one_minute_data['安値']
+    
+    # 実体を計算（ABS(始値-終値)）
+    one_minute_data['実体'] = np.abs(one_minute_data['始値'] - one_minute_data['終値'])
+    
+    # 抽出条件を計算（IF(前の終値-安値>=MAX(価格帯/100+1,3),"◯","✕")）
+    # 前の終値-安値は既に「下落幅」として計算済み
+    max_threshold = np.maximum(one_minute_data['価格帯'] / 100 + 1, 3)
+    one_minute_data['抽出条件'] = np.where(one_minute_data['下落幅'] >= max_threshold, "◯", "✕")
+    
+    # 当足で勝ちを計算（IF(終値-安値>=3,"◯","✕")）
+    one_minute_data['当足で勝ち'] = np.where(one_minute_data['終値'] - one_minute_data['安値'] >= 3, "◯", "✕")
+    
+    # 次足で勝ちを計算（IF(AND(次足の安値-安値>=-1,次足の高値-安値>=3),"◯","✕")）
+    next_low = one_minute_data['安値'].shift(-1)  # 次足の安値
+    next_high = one_minute_data['高値'].shift(-1)  # 次足の高値
+    condition1 = (next_low - one_minute_data['安値'] >= -1)  # 次足の安値-安値>=-1
+    condition2 = (next_high - one_minute_data['安値'] >= 3)  # 次足の高値-安値>=3
+    one_minute_data['次足で勝ち'] = np.where(condition1 & condition2, "◯", "✕")
+    
+    # 勝ちを計算（当足で勝ちまたは次足で勝ちのどちらかが◯なら◯、どちらも✕なら✕）
+    one_minute_data['勝ち'] = np.where(
+        (one_minute_data['当足で勝ち'] == "◯") | (one_minute_data['次足で勝ち'] == "◯"),
+        "◯", "✕"
+    )
+    
+    # 最低下落幅を計算（価格帯/100+1）
+    one_minute_data['最低下落幅'] = one_minute_data['価格帯'] / 100 + 1
+    
+    # 列の順序を整理（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、当足で勝ち、次足で勝ち、勝ち、最低下落幅）
+    result = one_minute_data[['時刻', '高値', '始値', '終値', '安値', '出来高', 'VWAP', 'SMA5', '出来高MA5', '価格帯', '下落幅', '下ヒゲ', '実体', '抽出条件', '当足で勝ち', '次足で勝ち', '勝ち', '最低下落幅']].copy()
     
     # 数値を整数または適切な小数に変換
     result['始値'] = result['始値'].astype(float)
@@ -252,6 +292,12 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     result['VWAP'] = result['VWAP'].astype(float).round(1)  # 小数点第1位まで
     result['SMA5'] = result['SMA5'].astype(float).round(1)  # 小数点第1位まで
     result['出来高MA5'] = result['出来高MA5'].astype(float).round(1)  # 小数点第1位まで
+    result['価格帯'] = result['価格帯'].astype(int)  # 整数
+    result['下落幅'] = result['下落幅'].astype(float).round(1)  # 小数点第1位まで
+    result['下ヒゲ'] = result['下ヒゲ'].astype(float).round(1)  # 小数点第1位まで
+    result['実体'] = result['実体'].astype(float).round(1)  # 小数点第1位まで
+    result['最低下落幅'] = result['最低下落幅'].astype(float).round(1)  # 小数点第1位まで
+    # 抽出条件、当足で勝ち、次足で勝ち、勝ちは文字列なので変換不要
     
     return result
 
@@ -289,9 +335,20 @@ def process_single_file(csv_path: Path, start_time: Optional[time] = None, end_t
         print(f"  警告: 1分足データが作成できませんでした")
         return False
     
-    # CSVファイルに保存
+    # CSVファイルに保存（数値列のフォーマットを調整）
     try:
-        one_minute_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        # 数値列をフォーマット（小数点以下が0の場合は整数として表示）
+        df_to_save = one_minute_df.copy()
+        float_columns = ['始値', '高値', '安値', '終値', 'VWAP', 'SMA5', '出来高MA5', '下落幅', '下ヒゲ', '実体', '最低下落幅']
+        for col in float_columns:
+            if col in df_to_save.columns:
+                df_to_save[col] = df_to_save[col].apply(
+                    lambda x: f"{int(x)}" if pd.notna(x) and isinstance(x, (int, float)) and x == int(x) 
+                    else f"{x:.1f}" if pd.notna(x) and isinstance(x, (int, float)) 
+                    else x
+                )
+        
+        df_to_save.to_csv(output_path, index=False, encoding='utf-8-sig')
         print(f"  保存完了: {output_filename} ({len(one_minute_df)}行)")
         return True
     except Exception as e:
