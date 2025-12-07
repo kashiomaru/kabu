@@ -23,7 +23,7 @@ import sys
 import csv
 import argparse
 from pathlib import Path
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Optional, Tuple
 import pandas as pd
 import numpy as np
@@ -181,7 +181,7 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
         df: 歩み値データのDataFrame（datetime, price, volume列が必要）
         
     Returns:
-        pd.DataFrame: 1分足データ（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、当足で勝ち、次足で勝ち、勝ち、最低下落幅）
+        pd.DataFrame: 1分足データ（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、推奨下落幅、当足で勝ち、次足で勝ち、勝ち、最低下落幅、安値をつけた秒数、安値から1秒戻り幅〜安値から10秒戻り幅）
     """
     if df.empty:
         return pd.DataFrame()
@@ -261,6 +261,9 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     max_threshold = np.maximum(one_minute_data['価格帯'] / 100 + 1, 3)
     one_minute_data['抽出条件'] = np.where(one_minute_data['下落幅'] >= max_threshold, "◯", "✕")
     
+    # 推奨下落幅を計算（前足の終値-足の安値-1）
+    one_minute_data['推奨下落幅'] = prev_close - one_minute_data['安値'] - 1
+    
     # 当足で勝ちを計算（IF(終値-安値>=3,"◯","✕")）
     one_minute_data['当足で勝ち'] = np.where(one_minute_data['終値'] - one_minute_data['安値'] >= 3, "◯", "✕")
     
@@ -280,8 +283,85 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     # 最低下落幅を計算（価格帯/100+1）
     one_minute_data['最低下落幅'] = one_minute_data['価格帯'] / 100 + 1
     
-    # 列の順序を整理（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、当足で勝ち、次足で勝ち、勝ち、最低下落幅）
-    result = one_minute_data[['時刻', '高値', '始値', '終値', '安値', '出来高', 'VWAP', 'SMA5', '出来高MA5', '価格帯', '下落幅', '下ヒゲ', '実体', '抽出条件', '当足で勝ち', '次足で勝ち', '勝ち', '最低下落幅']].copy()
+    # 安値をつけてから1〜10秒以内に戻った幅を計算
+    def calculate_recovery_after_low(minute_start: pd.Timestamp):
+        """
+        その1分間の歩み値データから、安値をつけてから1〜10秒以内に戻った幅を計算
+        
+        Args:
+            minute_start: その1分間の開始時刻
+            
+        Returns:
+            tuple: (安値をつけた秒数, 安値からの最大戻り幅のリスト（1秒、2秒、...、10秒）)
+        """
+        minute_end = minute_start + timedelta(minutes=1)
+        
+        # その1分間のデータを抽出
+        minute_data = df_indexed[
+            (df_indexed.index >= minute_start) & 
+            (df_indexed.index < minute_end)
+        ]
+        
+        if minute_data.empty:
+            return (np.nan, [np.nan] * 10)
+        
+        # 安値（最小価格）を取得
+        low_price = minute_data['price'].min()
+        
+        # 最初に安値をつけた時点を特定
+        low_price_rows = minute_data[minute_data['price'] == low_price]
+        if low_price_rows.empty:
+            return (np.nan, [np.nan] * 10)
+        
+        first_low_time = low_price_rows.index[0]
+        
+        # 安値をつけた秒数を計算（1分足の開始時刻からの秒数）
+        time_diff = first_low_time - minute_start
+        low_second = int(time_diff.total_seconds())
+        
+        # 1秒から10秒までの戻り幅を計算
+        recovery_widths = []
+        for seconds in range(1, 11):
+            time_limit = first_low_time + timedelta(seconds=seconds)
+            # 1分足の終了時刻も考慮
+            actual_limit = min(time_limit, minute_end)
+            
+            after_low_data = minute_data[
+                (minute_data.index >= first_low_time) & 
+                (minute_data.index <= actual_limit)
+            ]
+            
+            if after_low_data.empty:
+                recovery_widths.append(0.0)
+            else:
+                # 安値からの最大戻り幅を計算（最大価格 - 安値）
+                max_price_after_low = after_low_data['price'].max()
+                recovery_width = max_price_after_low - low_price
+                recovery_widths.append(recovery_width)
+        
+        return (low_second, recovery_widths)
+    
+    # 各1分間に対して「安値をつけた秒数」と「安値から1〜10秒戻り幅」を計算
+    recovery_dict = {}
+    low_second_dict = {}
+    for name, group in resampled:
+        low_second, recovery_list = calculate_recovery_after_low(name)
+        recovery_dict[name] = recovery_list
+        low_second_dict[name] = low_second
+    
+    # 安値をつけた秒数を追加
+    one_minute_data['安値をつけた秒数'] = one_minute_data['datetime'].map(lambda x: low_second_dict.get(x, np.nan))
+    
+    # one_minute_dataのdatetime列に対応する値を取得（1秒から10秒まで）
+    for seconds in range(1, 11):
+        col_name = f'安値から{seconds}秒戻り幅'
+        one_minute_data[col_name] = one_minute_data['datetime'].map(
+            lambda x: recovery_dict.get(x, [np.nan] * 10)[seconds - 1] if x in recovery_dict else np.nan
+        )
+    
+    # 列の順序を整理（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、推奨下落幅、当足で勝ち、次足で勝ち、勝ち、最低下落幅、安値をつけた秒数、安値から1秒戻り幅〜安値から10秒戻り幅）
+    recovery_columns = [f'安値から{seconds}秒戻り幅' for seconds in range(1, 11)]
+    result = one_minute_data[['時刻', '高値', '始値', '終値', '安値', '出来高', 'VWAP', 'SMA5', '出来高MA5', '価格帯', '下落幅', '下ヒゲ', '実体', '抽出条件', '推奨下落幅', '当足で勝ち', '次足で勝ち', '勝ち', '最低下落幅', '安値をつけた秒数'] + recovery_columns].copy()
     
     # 数値を整数または適切な小数に変換
     result['始値'] = result['始値'].astype(float)
@@ -296,7 +376,13 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     result['下落幅'] = result['下落幅'].astype(float).round(1)  # 小数点第1位まで
     result['下ヒゲ'] = result['下ヒゲ'].astype(float).round(1)  # 小数点第1位まで
     result['実体'] = result['実体'].astype(float).round(1)  # 小数点第1位まで
+    result['推奨下落幅'] = result['推奨下落幅'].astype(float).round(1)  # 小数点第1位まで
     result['最低下落幅'] = result['最低下落幅'].astype(float).round(1)  # 小数点第1位まで
+    result['安値をつけた秒数'] = result['安値をつけた秒数'].astype(int)  # 整数
+    # 1秒から10秒までの戻り幅を小数点第1位まで
+    for seconds in range(1, 11):
+        col_name = f'安値から{seconds}秒戻り幅'
+        result[col_name] = result[col_name].astype(float).round(1)  # 小数点第1位まで
     # 抽出条件、当足で勝ち、次足で勝ち、勝ちは文字列なので変換不要
     
     return result
@@ -339,7 +425,9 @@ def process_single_file(csv_path: Path, start_time: Optional[time] = None, end_t
     try:
         # 数値列をフォーマット（小数点以下が0の場合は整数として表示）
         df_to_save = one_minute_df.copy()
-        float_columns = ['始値', '高値', '安値', '終値', 'VWAP', 'SMA5', '出来高MA5', '下落幅', '下ヒゲ', '実体', '最低下落幅']
+        recovery_columns = [f'安値から{seconds}秒戻り幅' for seconds in range(1, 11)]
+        float_columns = ['始値', '高値', '安値', '終値', 'VWAP', 'SMA5', '出来高MA5', '下落幅', '下ヒゲ', '実体', '推奨下落幅', '最低下落幅'] + recovery_columns
+        # 安値をつけた秒数は整数なのでフォーマット不要
         for col in float_columns:
             if col in df_to_save.columns:
                 df_to_save[col] = df_to_save[col].apply(
