@@ -107,7 +107,8 @@ def load_tick_data(csv_path: Path, start_time: Optional[time] = None, end_time: 
                 print(f"  警告: 必要な列が見つかりません。スキップします。")
                 return None
             
-            # データ行を処理
+            # データ行を処理（行番号を追加して、同じ時刻のデータも正しい順序でソートできるようにする）
+            row_num = 0
             for row in reader:
                 if len(row) <= max(time_col_idx, price_col_idx, volume_col_idx):
                     continue
@@ -154,8 +155,10 @@ def load_tick_data(csv_path: Path, start_time: Optional[time] = None, end_time: 
                                     'datetime': datetime_obj,
                                     'time': time_obj,
                                     'price': price,
-                                    'volume': volume
+                                    'volume': volume,
+                                    'row_num': row_num  # 行番号を追加（CSVファイルが時系列で逆順のため、同じ時刻のデータも正しい順序でソートするため）
                                 })
+                                row_num += 1
                 except ValueError:
                     continue
         
@@ -163,7 +166,11 @@ def load_tick_data(csv_path: Path, start_time: Optional[time] = None, end_time: 
             return None
         
         df = pd.DataFrame(data)
-        df = df.sort_values('datetime')
+        # datetimeとrow_numでソート（CSVファイルが時系列で逆順のため、row_numを逆順にしてからソート）
+        # これにより、同じ時刻のデータも正しい順序（時系列順）になる
+        df['sort_key'] = df['row_num'] * -1  # 行番号を逆順にする（CSVファイルが時系列で逆順のため）
+        df = df.sort_values(['datetime', 'sort_key'])
+        df = df.drop(['row_num', 'sort_key'], axis=1)
         df = df.reset_index(drop=True)
         
         return df
