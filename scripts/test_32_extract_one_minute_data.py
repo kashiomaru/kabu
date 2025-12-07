@@ -25,18 +25,20 @@ import numpy as np
 
 def parse_time_string(time_str: str) -> str:
     """
-    時間文字列を正規化（HH:MM または HH:MM:SS形式をHH:MMに統一）
+    時間文字列を正規化（HH:MM または HH:MM:SS形式をHH:MMに統一、時間部分を2桁にゼロパディング）
     
     Args:
-        time_str: 時間文字列（"HH:MM" または "HH:MM:SS"形式）
+        time_str: 時間文字列（"HH:MM" または "HH:MM:SS"形式、または "H:MM" 形式）
         
     Returns:
-        str: 正規化された時間文字列（"HH:MM"形式）
+        str: 正規化された時間文字列（"HH:MM"形式、時間部分は2桁）
     """
     if ':' in time_str:
         parts = time_str.split(':')
         if len(parts) >= 2:
-            return f"{parts[0]}:{parts[1]}"
+            hour = parts[0].zfill(2)  # 時間部分を2桁にゼロパディング
+            minute = parts[1].zfill(2)  # 分部分も2桁にゼロパディング（念のため）
+            return f"{hour}:{minute}"
     return time_str
 
 
@@ -135,18 +137,14 @@ def extract_one_minute_data(csv_path: Path, target_time: str) -> pd.Series:
     return pd.Series(result_data)
 
 
-def format_output(data: pd.Series) -> str:
+def get_column_order():
     """
-    データを指定された順序でCSV形式の文字列に変換
+    出力する列の順序を取得
     
-    Args:
-        data: 抽出されたデータ
-        
     Returns:
-        str: CSV形式の文字列
+        list: 列名のリスト
     """
-    # 指定された順序
-    column_order = [
+    return [
         'VWAP',
         'SMA5',
         '前の足の高値',
@@ -175,9 +173,20 @@ def format_output(data: pd.Series) -> str:
         '勝ち',
         '最低下落幅'
     ]
+
+
+def format_output(data: pd.Series, include_header: bool = False) -> str:
+    """
+    データを指定された順序でCSV形式の文字列に変換
     
-    # ヘッダー行
-    header = ','.join(column_order)
+    Args:
+        data: 抽出されたデータ
+        include_header: ヘッダー行を含めるかどうか
+        
+    Returns:
+        str: CSV形式の文字列
+    """
+    column_order = get_column_order()
     
     # データ行
     values = []
@@ -188,14 +197,19 @@ def format_output(data: pd.Series) -> str:
     
     data_row = ','.join(values)
     
-    return f"{header}\n{data_row}"
+    if include_header:
+        # ヘッダー行
+        header = ','.join(column_order)
+        return f"{header}\n{data_row}"
+    else:
+        return data_row
 
 
 def main():
     """メイン処理"""
     parser = argparse.ArgumentParser(description='1分足データから指定時間の情報を抽出')
     parser.add_argument('csv_file', type=str, help='1分足データCSVファイルのパス')
-    parser.add_argument('time', type=str, help='抽出する時間（HH:MM または HH:MM:SS形式）')
+    parser.add_argument('times', nargs='+', type=str, help='抽出する時間（HH:MM または HH:MM:SS形式）。複数指定可能')
     
     args = parser.parse_args()
     
@@ -211,18 +225,27 @@ def main():
         return 1
     
     try:
-        # データを抽出
-        data = extract_one_minute_data(csv_path, args.time)
+        # ヘッダーを出力
+        column_order = get_column_order()
+        header = ','.join(column_order)
+        print(header)
         
-        # CSV形式で出力
-        output = format_output(data)
-        print(output)
+        # 各時刻のデータを抽出して出力
+        for time_str in args.times:
+            try:
+                # データを抽出
+                data = extract_one_minute_data(csv_path, time_str)
+                
+                # CSV形式で出力（ヘッダーなし）
+                output = format_output(data, include_header=False)
+                print(output)
+                
+            except ValueError as e:
+                print(f"警告: 時刻 '{time_str}' の処理中にエラー: {e}", file=sys.stderr)
+                continue
         
         return 0
         
-    except ValueError as e:
-        print(f"エラー: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
         print(f"エラー: {e}", file=sys.stderr)
         return 1
