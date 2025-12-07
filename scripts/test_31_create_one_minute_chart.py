@@ -188,7 +188,7 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
         df: 歩み値データのDataFrame（datetime, price, volume列が必要）
         
     Returns:
-        pd.DataFrame: 1分足データ（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、推奨下落幅、当足で勝ち、次足で勝ち、勝ち、最低下落幅、安値をつけた秒数、安値から1秒戻り幅〜安値から10秒戻り幅）
+        pd.DataFrame: 1分足データ（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、推奨下落幅、推奨指値位置、当足で勝ち、次足で勝ち、勝ち、最低下落幅、安値をつけた秒数、安値から1秒戻り幅〜安値から10秒戻り幅）
     """
     if df.empty:
         return pd.DataFrame()
@@ -271,6 +271,9 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     # 推奨下落幅を計算（前足の終値-足の安値-1）
     one_minute_data['推奨下落幅'] = prev_close - one_minute_data['安値'] - 1
     
+    # 推奨指値位置を計算（安値+1）
+    one_minute_data['推奨指値位置'] = one_minute_data['安値'] + 1
+    
     # 当足で勝ちを計算（IF(終値-安値>=3,"◯","✕")）
     one_minute_data['当足で勝ち'] = np.where(one_minute_data['終値'] - one_minute_data['安値'] >= 3, "◯", "✕")
     
@@ -315,11 +318,13 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
         # 安値（最小価格）を取得
         low_price = minute_data['price'].min()
         
-        # 最初に安値をつけた時点を特定
+        # 最初に安値をつけた時点を特定（時系列順で最初の安値）
         low_price_rows = minute_data[minute_data['price'] == low_price]
         if low_price_rows.empty:
             return (np.nan, [np.nan] * 10)
         
+        # 時系列順で最初の安値をつけた行を取得
+        first_low_idx = low_price_rows.index[0]
         first_low_time = low_price_rows.index[0]
         
         # 安値をつけた秒数を計算（1分足の開始時刻からの秒数）
@@ -333,8 +338,10 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
             # 1分足の終了時刻も考慮
             actual_limit = min(time_limit, minute_end)
             
+            # 安値をつけた「後」のデータを取得（同じ時刻のデータも含むが、安値の行より後のデータ）
+            # インデックスがfirst_low_idxより後のデータのみを対象とする
             after_low_data = minute_data[
-                (minute_data.index >= first_low_time) & 
+                (minute_data.index > first_low_idx) & 
                 (minute_data.index <= actual_limit)
             ]
             
@@ -366,9 +373,9 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
             lambda x: recovery_dict.get(x, [np.nan] * 10)[seconds - 1] if x in recovery_dict else np.nan
         )
     
-    # 列の順序を整理（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、推奨下落幅、当足で勝ち、次足で勝ち、勝ち、最低下落幅、安値をつけた秒数、安値から1秒戻り幅〜安値から10秒戻り幅）
+    # 列の順序を整理（時刻、高値、始値、終値、安値、出来高、VWAP、SMA5、出来高MA5、価格帯、下落幅、下ヒゲ、実体、抽出条件、推奨下落幅、推奨指値位置、当足で勝ち、次足で勝ち、勝ち、最低下落幅、安値をつけた秒数、安値から1秒戻り幅〜安値から10秒戻り幅）
     recovery_columns = [f'安値から{seconds}秒戻り幅' for seconds in range(1, 11)]
-    result = one_minute_data[['時刻', '高値', '始値', '終値', '安値', '出来高', 'VWAP', 'SMA5', '出来高MA5', '価格帯', '下落幅', '下ヒゲ', '実体', '抽出条件', '推奨下落幅', '当足で勝ち', '次足で勝ち', '勝ち', '最低下落幅', '安値をつけた秒数'] + recovery_columns].copy()
+    result = one_minute_data[['時刻', '高値', '始値', '終値', '安値', '出来高', 'VWAP', 'SMA5', '出来高MA5', '価格帯', '下落幅', '下ヒゲ', '実体', '抽出条件', '推奨下落幅', '推奨指値位置', '当足で勝ち', '次足で勝ち', '勝ち', '最低下落幅', '安値をつけた秒数'] + recovery_columns].copy()
     
     # 数値を整数または適切な小数に変換
     result['始値'] = result['始値'].astype(float)
@@ -384,6 +391,7 @@ def create_one_minute_chart(df: pd.DataFrame) -> pd.DataFrame:
     result['下ヒゲ'] = result['下ヒゲ'].astype(float).round(1)  # 小数点第1位まで
     result['実体'] = result['実体'].astype(float).round(1)  # 小数点第1位まで
     result['推奨下落幅'] = result['推奨下落幅'].astype(float).round(1)  # 小数点第1位まで
+    result['推奨指値位置'] = result['推奨指値位置'].astype(float).round(1)  # 小数点第1位まで
     result['最低下落幅'] = result['最低下落幅'].astype(float).round(1)  # 小数点第1位まで
     result['安値をつけた秒数'] = result['安値をつけた秒数'].astype(int)  # 整数
     # 1秒から10秒までの戻り幅を小数点第1位まで
@@ -433,7 +441,7 @@ def process_single_file(csv_path: Path, start_time: Optional[time] = None, end_t
         # 数値列をフォーマット（小数点以下が0の場合は整数として表示）
         df_to_save = one_minute_df.copy()
         recovery_columns = [f'安値から{seconds}秒戻り幅' for seconds in range(1, 11)]
-        float_columns = ['始値', '高値', '安値', '終値', 'VWAP', 'SMA5', '出来高MA5', '下落幅', '下ヒゲ', '実体', '推奨下落幅', '最低下落幅'] + recovery_columns
+        float_columns = ['始値', '高値', '安値', '終値', 'VWAP', 'SMA5', '出来高MA5', '下落幅', '下ヒゲ', '実体', '推奨下落幅', '推奨指値位置', '最低下落幅'] + recovery_columns
         # 安値をつけた秒数は整数なのでフォーマット不要
         for col in float_columns:
             if col in df_to_save.columns:
