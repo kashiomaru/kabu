@@ -4,6 +4,7 @@ database/
 
 # 機密情報
 token.txt
+apikey.txt
 
 # macOS
 .DS_Store
